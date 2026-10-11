@@ -1,0 +1,12 @@
+name = "liumang-lumina"
+main = "src/worker.js"
+compatibility_date = "2025-10-11"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[kv_namespaces]]
+binding = "NAV_KV"
+id = "69ccbbf86eea4865a09b94e4f61692cf"

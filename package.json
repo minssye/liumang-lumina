@@ -1,0 +1,9 @@
+{
+  "name": "liumang-lumina",
+  "private": true,
+  "description": "榴芒启航 LUMINA — immersive start page on Cloudflare Workers + KV",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}

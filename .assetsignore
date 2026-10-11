@@ -1,0 +1,16 @@
+src/
+node_modules/
+.git/
+.gitignore
+.assetsignore
+.dev.vars
+.dev.vars.example
+wrangler.toml
+package.json
+package-lock.json
+README.md
+.monkeycode/
+.wrangler/
+*.md
+*.toml
+*.json

@@ -7,6 +7,8 @@
 <meta name="description" content="榴芒启航 LUMINA —— 一个沉浸式开始页：随机高清壁纸、搜索、分类收藏。">
 <meta name="theme-color" content="#05070A">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="preconnect" href="https://www.bing.com" crossorigin>
+<link rel="dns-prefetch" href="https://www.bing.com">
 <style>
   :root {
     --fg: #F2F6F8;
@@ -310,9 +312,13 @@
   .emo.on { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 0 2px rgba(92,184,138,.25); }
   .panel footer {
     display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line);
-    font-size: 12px; color: var(--fg-faint);
+    font-size: 12px; color: var(--fg-faint); flex-wrap: wrap;
   }
   .panel footer .grow { flex: 1; }
+  .panel footer input {
+    background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 9px; color: var(--fg);
+    font: inherit; font-size: 12.5px; padding: 7px 10px; outline: none; width: 160px;
+  }
 
   .jump {
     position: fixed; inset: 0; z-index: 35; display: flex; align-items: center; justify-content: center;
@@ -433,7 +439,8 @@
     <div class="panel" role="dialog" aria-modal="true">
       <header>
         <h2>设置 · 榴芒启航</h2>
-        <span class="badge ok" id="storeBadge">本地存储</span>
+        <span class="badge" id="authBadge">未登录</span>
+        <span class="badge" id="storeBadge">KV</span>
         <span class="grow"></span>
         <button class="mini" id="closeModal" type="button">关闭</button>
       </header>
@@ -448,11 +455,14 @@
         </div>
       </div>
       <footer>
-        <span>数据保存在本机浏览器，可导出备份</span>
+        <span id="tip">编辑需要登录密码</span>
         <span class="grow"></span>
         <button class="mini" id="exportBtn" type="button">导出 JSON</button>
         <button class="mini" id="importBtn" type="button">导入 JSON</button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <input id="pw" type="password" placeholder="访问密码" autocomplete="off">
+        <button class="mini" id="unlockBtn" type="button">登录</button>
+        <button class="mini" id="logoutBtn" type="button" hidden>退出</button>
         <button class="mini" id="resetBtn" type="button">恢复默认</button>
       </footer>
     </div>
@@ -531,7 +541,7 @@ var state = {
   data: null, activeId: null, expanded: false, query: '', engine: 0,
   bgList: [], bgIndex: -1, showingA: true, editing: null, recent: [],
   adminCatId: null, dragId: null, manualHidden: false, hintExpired: false, nid: 100,
-  iconShape: 'rounded'
+  iconShape: 'rounded', unlocked: false, kvReady: true
 };
 
 var $ = function (id) { return document.getElementById(id); };
@@ -555,7 +565,7 @@ function hostOf(url) {
 function iconUrl(site) {
   if (site.icon) return site.icon;
   var h = hostOf(site.url);
-  return h ? 'https://www.google.com/s2/favicons?sz=128&domain=' + encodeURIComponent(h) : '';
+  return h ? '/api/nav/icon?host=' + encodeURIComponent(h) : '';
 }
 
 function nextId() {
@@ -563,28 +573,102 @@ function nextId() {
   return state.nid;
 }
 
-function saveData() {
-  try { localStorage.setItem(DATA_KEY, JSON.stringify(state.data)); } catch (e) {}
+function rememberNid(data) {
+  var max = 100;
+  (data.categories || []).forEach(function (c) {
+    if (c.id > max) max = c.id;
+    (c.sites || []).forEach(function (s) { if (s.id > max) max = s.id; });
+  });
+  state.nid = max;
+}
+
+function api(path, opts) {
+  var init = Object.assign({ credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } }, opts || {});
+  return fetch(path, init).then(function (res) {
+    return res.json().catch(function () { return null; }).then(function (j) {
+      if (!res.ok || !j || !j.ok) {
+        var e = new Error((j && j.message) || ('HTTP ' + res.status));
+        e.status = res.status;
+        throw e;
+      }
+      return j;
+    });
+  });
+}
+
+function withAuth(fn) {
+  return fn().catch(function (e) {
+    if (e.status === 401) {
+      state.unlocked = false;
+      renderAdmin();
+      toast('需要先登录', true);
+      $('pw').focus();
+    } else {
+      toast(e.message || '请求失败', true);
+    }
+    throw e;
+  });
+}
+
+function applyServerData(j) {
+  var cats = Array.isArray(j && j.categories) ? j.categories
+    : (j && j.data && Array.isArray(j.data.categories) ? j.data.categories : []);
+  state.data = { categories: cats };
+  rememberNid(state.data);
+  state.kvReady = true;
+  $('storeBadge').textContent = 'KV 已连接';
+  $('storeBadge').className = 'badge ok';
+  if (state.activeId !== RECENT_ID && !state.data.categories.some(function (c) { return c.id === state.activeId; })) {
+    state.activeId = state.data.categories.length ? state.data.categories[0].id : null;
+  }
 }
 
 function loadData() {
-  try {
-    var raw = localStorage.getItem(DATA_KEY);
-    if (raw) {
-      var parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.categories) && parsed.categories.length) {
-        state.data = parsed;
-        var max = 100;
-        parsed.categories.forEach(function (c) {
-          if (c.id > max) max = c.id;
-          (c.sites || []).forEach(function (s) { if (s.id > max) max = s.id; });
-        });
-        state.nid = max;
-        return;
+  return api('/api/nav/data').then(function (j) {
+    applyServerData(j);
+  }).catch(function (e) {
+    try {
+      var raw = localStorage.getItem(DATA_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.categories) && parsed.categories.length) {
+          state.data = parsed;
+          rememberNid(parsed);
+          state.kvReady = false;
+          $('storeBadge').textContent = '离线缓存';
+          $('storeBadge').className = 'badge';
+          toast('导航数据加载失败，已用本地缓存', true);
+          return;
+        }
       }
+    } catch (err) {}
+    state.data = JSON.parse(JSON.stringify(DEFAULT_DATA));
+    state.kvReady = false;
+    $('storeBadge').textContent = e.status === 503 ? 'KV 未绑定' : '内置数据';
+    $('storeBadge').className = 'badge';
+    toast('导航数据加载失败：' + e.message, true);
+  }).then(function () {
+    if (state.activeId !== RECENT_ID && (!state.data.categories.length || !state.data.categories.some(function (c) { return c.id === state.activeId; }))) {
+      state.activeId = state.data.categories.length ? state.data.categories[0].id : null;
     }
-  } catch (e) {}
-  state.data = JSON.parse(JSON.stringify(DEFAULT_DATA));
+    renderDock();
+    renderSites();
+    renderAdmin();
+  });
+}
+
+function checkAuth() {
+  return fetch('/api/auth/check', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { state.unlocked = Boolean(j && j.authed); })
+    .catch(function () { state.unlocked = false; });
+}
+
+function persistAndRefresh() {
+  try { localStorage.setItem(DATA_KEY, JSON.stringify(state.data)); } catch (e) {}
+  renderDock();
+  renderSites();
+  renderAdmin();
 }
 
 function loadRecent() {
@@ -789,21 +873,9 @@ function loadBgList() {
 
   var archive = 'https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=zh-CN';
   var tries = [
+    function () { return api('/api/nav/bing?n=8&mkt=zh-CN').then(function (j) { return j.images || []; }); },
     function () { return fetchJson(archive).then(normalizeBingArchive); },
-    function () { return fetchJson('https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=zh-CN').then(normalizeBingArchive); },
-    function () { return fetchJson('https://corsproxy.io/?' + encodeURIComponent(archive)).then(normalizeBingArchive); },
-    function () { return fetchJson('https://api.allorigins.win/raw?url=' + encodeURIComponent(archive)).then(normalizeBingArchive); },
-    function () {
-      var reqs = [];
-      for (var i = 0; i < 8; i++) {
-        reqs.push(fetchJson('https://bing.biturl.top/?resolution=1920&format=json&index=' + i + '&mkt=zh-CN').catch(function () { return null; }));
-      }
-      return Promise.all(reqs).then(function (arr) {
-        return arr.filter(Boolean).map(function (j) {
-          return { full: j.url, uhd: j.url, copyright: j.copyright || '' };
-        });
-      });
-    }
+    function () { return fetchJson('https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=zh-CN').then(normalizeBingArchive); }
   ];
 
   function next(i) {
@@ -843,19 +915,41 @@ function applyBg(idx, skip) {
   var nextEl = state.showingA ? $('bgB') : $('bgA');
   var cur = state.showingA ? $('bgA') : $('bgB');
   $('credit').textContent = (item.copyright || '').slice(0, 90);
-  var img = new Image();
-  img.referrerPolicy = 'no-referrer';
-  img.onload = function () {
-    nextEl.style.backgroundImage = 'url("' + (item.full || item.uhd) + '")';
+  var swap = function (url) {
+    nextEl.style.backgroundImage = 'url("' + url + '")';
     nextEl.classList.add('on');
     cur.classList.remove('on');
     state.showingA = !state.showingA;
   };
-  img.onerror = function () {
+  var upgradeToUhd = function () {
+    if (!item.uhd || item.uhd === item.full) return;
+    var hi = new Image();
+    hi.referrerPolicy = 'no-referrer';
+    hi.onload = function () {
+      var visible = state.showingA ? $('bgA') : $('bgB');
+      visible.style.backgroundImage = 'url("' + item.uhd + '")';
+    };
+    hi.src = item.uhd;
+  };
+  var low = new Image();
+  low.referrerPolicy = 'no-referrer';
+  low.onload = function () {
+    swap(item.full || item.uhd);
+    upgradeToUhd();
+  };
+  low.onerror = function () {
+    if (item.uhd && item.uhd !== item.full) {
+      var hi = new Image();
+      hi.referrerPolicy = 'no-referrer';
+      hi.onload = function () { swap(item.uhd); };
+      hi.onerror = function () { skip[idx] = true; applyBg(idx + 1, skip); };
+      hi.src = item.uhd;
+      return;
+    }
     skip[idx] = true;
     applyBg(idx + 1, skip);
   };
-  img.src = item.full || item.uhd;
+  low.src = item.full || item.uhd;
 }
 
 var BANG_MAP = { g: 1, google: 1, b: 0, bing: 0, d: 2, baidu: 2 };
@@ -969,13 +1063,12 @@ function renderAdmin() {
     }
   });
   $('siteList').innerHTML = sh || '<div class="row"><span class="tt">该分类下还没有网站</span></div>';
-}
-
-function persistAndRefresh() {
-  saveData();
-  renderDock();
-  renderSites();
-  renderAdmin();
+  $('authBadge').textContent = state.unlocked ? '已登录' : '未登录';
+  $('authBadge').className = 'badge' + (state.unlocked ? ' ok' : '');
+  $('tip').textContent = state.unlocked ? '已登录，可直接编辑' : '编辑需要登录密码';
+  $('pw').hidden = state.unlocked;
+  $('unlockBtn').hidden = state.unlocked;
+  $('logoutBtn').hidden = !state.unlocked;
 }
 
 var jump = { url: '', title: '', icon: '', left: 5, timer: null };
@@ -991,7 +1084,7 @@ function openJump(site) {
   $('jumpTitle').textContent = jump.title;
   $('jumpUrl').textContent = host || site.url;
   var ico = $('jumpIco');
-  var src = jump.icon || (host ? 'https://www.google.com/s2/favicons?sz=128&domain=' + encodeURIComponent(host) : '');
+  var src = jump.icon || (host ? '/api/nav/icon?host=' + encodeURIComponent(host) : '');
   ico.className = 'jump-ico';
   ico.innerHTML = (src ? '<img src="' + esc(src) + '" alt="">' : '') +
     '<span class="jump-letter">' + esc((jump.title || '?').trim().charAt(0)) + '</span>';
@@ -1057,20 +1150,16 @@ function makeSortable(container, type, getId) {
     var ids = Array.prototype.map.call(container.querySelectorAll('.row[draggable="true"]'), function (r) { return getId(r); });
     Array.prototype.forEach.call(container.querySelectorAll('.row'), function (r) { r.classList.remove('over', 'drag'); });
     state.dragId = null;
-    if (type === 'category') {
-      var map = {};
-      state.data.categories.forEach(function (c) { map[c.id] = c; });
-      state.data.categories = ids.map(function (id) { return map[id]; }).filter(Boolean);
-    } else {
-      var cat = state.data.categories.filter(function (c) { return c.id === state.adminCatId; })[0];
-      if (cat) {
-        var smap = {};
-        cat.sites.forEach(function (s) { smap[s.id] = s; });
-        cat.sites = ids.map(function (id) { return smap[id]; }).filter(Boolean);
-      }
-    }
-    persistAndRefresh();
-    toast('顺序已保存');
+    withAuth(function () {
+      return api('/api/nav/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ type: type, ids: ids, categoryId: state.adminCatId })
+      });
+    }).then(function (j) {
+      applyServerData(j);
+      persistAndRefresh();
+      toast('顺序已保存');
+    }).catch(function () {});
   });
 }
 
@@ -1161,6 +1250,22 @@ $('jumpGo').addEventListener('click', function () { closeJump(true); });
 $('jumpCancel').addEventListener('click', function () { closeJump(false); });
 $('jump').addEventListener('click', function (e) { if (e.target === $('jump')) closeJump(false); });
 
+function unlock() {
+  var pw = $('pw').value;
+  if (!pw) { $('pw').focus(); return; }
+  api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: pw }) })
+    .then(function () { state.unlocked = true; $('pw').value = ''; renderAdmin(); toast('已登录，可以编辑了'); })
+    .catch(function (e) { toast(e.message || '登录失败', true); });
+}
+$('unlockBtn').addEventListener('click', unlock);
+$('pw').addEventListener('keydown', function (e) { if (e.key === 'Enter') unlock(); });
+$('logoutBtn').addEventListener('click', function () {
+  api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(function () {});
+  state.unlocked = false;
+  renderAdmin();
+  toast('已退出登录');
+});
+
 $('exportBtn').addEventListener('click', function () {
   var payload = {
     app: '榴芒启航', version: 1, exportedAt: new Date().toISOString(),
@@ -1189,27 +1294,28 @@ $('importFile').addEventListener('change', function (e) {
     try { data = JSON.parse(String(reader.result)); } catch (err) { toast('JSON 解析失败', true); return; }
     var cats = data && (data.categories || (data.data && data.data.categories));
     if (!Array.isArray(cats)) { toast('文件里没有 categories 数组', true); return; }
-    if (!confirm('将用该文件覆盖当前全部数据，确定继续？')) return;
-    state.data = { categories: cats.map(function (c) {
-      return {
-        id: nextId(), name: c.name || '未命名', icon: c.icon || '📁',
-        sites: (c.sites || []).map(function (s) {
-          return { id: nextId(), title: s.title || s.url, url: s.url || '', icon: s.icon || '', description: s.description || '' };
-        })
-      };
-    })};
-    state.activeId = state.data.categories.length ? state.data.categories[0].id : null;
-    persistAndRefresh();
-    toast('导入完成');
+    var siteCount = cats.reduce(function (n, c) { return n + ((c.sites && c.sites.length) || 0); }, 0);
+    if (!confirm('将用该文件覆盖当前全部数据：\n' + cats.length + ' 个分类 / ' + siteCount + ' 个网站\n\n确定继续？')) return;
+    toast('正在导入…');
+    withAuth(function () { return api('/api/nav/import', { method: 'POST', body: JSON.stringify({ categories: cats }) }); })
+      .then(function (r) {
+        if (r.data) applyServerData(r.data);
+        else return loadData();
+        persistAndRefresh();
+        toast('导入完成：' + (r.categories || cats.length) + ' 分类 / ' + (r.sites || siteCount) + ' 网站');
+      }).catch(function () {});
   };
   reader.readAsText(file);
 });
 $('resetBtn').addEventListener('click', function () {
   if (!confirm('恢复为默认分类和网站？当前数据会被覆盖。')) return;
-  state.data = JSON.parse(JSON.stringify(DEFAULT_DATA));
-  state.activeId = state.data.categories[0].id;
-  persistAndRefresh();
-  toast('已恢复默认');
+  withAuth(function () { return api('/api/nav/import', { method: 'POST', body: JSON.stringify(DEFAULT_DATA) }); })
+    .then(function (r) {
+      if (r.data) applyServerData(r.data);
+      else return loadData();
+      persistAndRefresh();
+      toast('已恢复默认');
+    }).catch(function () {});
 });
 
 $('addCat').addEventListener('click', function (e) {
@@ -1246,29 +1352,28 @@ $('catList').addEventListener('click', function (e) {
   if (act === 'cancel') { state.editing = null; renderAdmin(); return; }
   if (act === 'delCat') {
     if (!confirm('删除该分类及其下所有网站？')) return;
-    state.data.categories = state.data.categories.filter(function (c) { return c.id !== id; });
-    if (state.activeId === id) state.activeId = state.data.categories.length ? state.data.categories[0].id : null;
-    state.adminCatId = state.activeId;
-    state.editing = null;
-    persistAndRefresh();
-    toast('分类已删除');
+    withAuth(function () { return api('/api/nav/category/' + id, { method: 'DELETE' }); })
+      .then(function (j) {
+        applyServerData(j);
+        state.editing = null;
+        persistAndRefresh();
+        toast('分类已删除');
+      }).catch(function () {});
     return;
   }
   if (act === 'saveCat') {
     var fields = readEdit(row, ['name', 'icon']);
     if (!fields.name) { toast('请填写分类名称', true); return; }
-    if (!id) {
-      var created = { id: nextId(), name: fields.name, icon: fields.icon || '📁', sites: [] };
-      state.data.categories.push(created);
-      state.adminCatId = created.id;
-    } else {
-      state.data.categories.forEach(function (c) {
-        if (c.id === id) { c.name = fields.name; c.icon = fields.icon || '📁'; }
-      });
-    }
-    state.editing = null;
-    persistAndRefresh();
-    toast('分类已保存');
+    var path = id ? '/api/nav/category/' + id : '/api/nav/category';
+    withAuth(function () {
+      return api(path, { method: id ? 'PUT' : 'POST', body: JSON.stringify({ name: fields.name, icon: fields.icon || '📁' }) });
+    }).then(function (j) {
+      applyServerData(j);
+      if (!id && j.categories && j.categories.length) state.adminCatId = j.categories[j.categories.length - 1].id;
+      state.editing = null;
+      persistAndRefresh();
+      toast('分类已保存');
+    }).catch(function () {});
     return;
   }
   if (row.classList.contains('edit')) return;
@@ -1288,10 +1393,12 @@ $('siteList').addEventListener('click', function (e) {
   if (act === 'editSite') { state.editing = { type: 'site', id: Number(btn.dataset.id) }; renderAdmin(); return; }
   if (act === 'delSite') {
     var sid = Number(btn.dataset.id);
-    var cat = state.data.categories.filter(function (c) { return c.id === state.adminCatId; })[0];
-    if (cat) cat.sites = cat.sites.filter(function (s) { return s.id !== sid; });
-    persistAndRefresh();
-    toast('网站已删除');
+    withAuth(function () { return api('/api/nav/site/' + sid, { method: 'DELETE' }); })
+      .then(function (j) {
+        applyServerData(j);
+        persistAndRefresh();
+        toast('网站已删除');
+      }).catch(function () {});
     return;
   }
   if (act === 'saveSite') {
@@ -1299,21 +1406,26 @@ $('siteList').addEventListener('click', function (e) {
     var fields = readEdit(scope, ['title', 'url', 'icon', 'description']);
     if (!fields.title || !fields.url) { toast('请填写名称和网址', true); return; }
     if (!/^https?:\/\//i.test(fields.url)) fields.url = 'https://' + fields.url;
-    var cat = state.data.categories.filter(function (c) { return c.id === state.adminCatId; })[0];
-    if (!cat) return;
     var sid = btn.dataset.id ? Number(btn.dataset.id) : null;
-    if (!sid) {
-      cat.sites.push({ id: nextId(), title: fields.title, url: fields.url, icon: fields.icon || '', description: fields.description || '' });
-    } else {
-      cat.sites.forEach(function (s) {
-        if (s.id === sid) {
-          s.title = fields.title; s.url = fields.url; s.icon = fields.icon || ''; s.description = fields.description || '';
-        }
+    var path = sid ? '/api/nav/site/' + sid : '/api/nav/site';
+    toast(sid ? '正在保存…' : '正在抓取图标并保存…');
+    withAuth(function () {
+      return api(path, {
+        method: sid ? 'PUT' : 'POST',
+        body: JSON.stringify({
+          categoryId: state.adminCatId,
+          title: fields.title,
+          url: fields.url,
+          icon: fields.icon || '',
+          description: fields.description || ''
+        })
       });
-    }
-    state.editing = null;
-    persistAndRefresh();
-    toast('网站已保存');
+    }).then(function (j) {
+      applyServerData(j);
+      state.editing = null;
+      persistAndRefresh();
+      toast('网站已保存');
+    }).catch(function () {});
   }
 });
 
@@ -1361,14 +1473,10 @@ var HINTS = [
   }, 4200);
 })();
 
-loadData();
 loadRecent();
-state.activeId = state.data.categories.length ? state.data.categories[0].id : null;
 tick();
 setInterval(tick, 5000);
-renderDock();
-renderSites();
-loadBgList();
+checkAuth().then(function () { return loadData(); }).then(function () { loadBgList(); });
 </script>
 </body>
 </html>
