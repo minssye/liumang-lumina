@@ -29,6 +29,7 @@
   body {
     font-family: var(--font); color: var(--fg); background: #05070A; overflow: hidden;
     -webkit-font-smoothing: antialiased;
+    --hdr-lum: .3;
   }
   ::selection { background: var(--accent-soft); }
   :focus-visible { outline: 2px solid rgba(255,255,255,.55); outline-offset: 3px; border-radius: 10px; }
@@ -62,14 +63,39 @@
   }
 
   .topbar {
-    position: fixed; top: 16px; left: 20px; right: 20px; display: flex; align-items: center;
-    justify-content: space-between; font-size: 12.5px; color: var(--fg-dim); z-index: 6;
+    position: fixed; top: 18px; left: 22px; right: 22px; display: flex; align-items: center;
+    justify-content: space-between; z-index: 6;
   }
-  .brand { display: flex; align-items: center; gap: 10px; letter-spacing: .18em; }
-  .brand-mark { width: 28px; height: 28px; display: block; flex-shrink: 0; }
-  .brand b { font-weight: 600; color: var(--fg); letter-spacing: .1em; }
-  .brand-links { display: flex; gap: 14px; }
-  .brand-links span { letter-spacing: .06em; opacity: .78; }
+  .brand {
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px calc(9px + 13px * var(--hdr-lum)) rgba(0,0,0,calc(.42 + .33 * var(--hdr-lum)));
+    display: flex; align-items: center; gap: 12px;
+  }
+  .brand-mark {
+    width: 32px; height: 32px; display: block; flex-shrink: 0;
+    filter: drop-shadow(0 1px 6px rgba(0,0,0,.55));
+  }
+  .brand-text { display: flex; align-items: baseline; gap: 8px; }
+  .brand-name {
+    font-size: 14px; font-weight: 700; letter-spacing: .5em; white-space: nowrap;
+    color: #F5F8FA; text-shadow: var(--shadow);
+  }
+  .brand-sep {
+    font-size: 14px; color: rgba(245,248,250,.4); text-shadow: var(--shadow);
+    user-select: none;
+  }
+  .brand-tag {
+    font-size: 12px; font-weight: 400; letter-spacing: .8em; white-space: nowrap;
+    color: rgba(245,248,250,.72); text-shadow: var(--shadow);
+    transition: color .6s ease;
+  }
+  body[data-bg-tone="bright"] .brand-tag { color: rgba(245,248,250,.86); }
+  .brand-links { display: flex; gap: 16px; }
+  .brand-links a {
+    color: var(--fg-dim); text-decoration: none; letter-spacing: .06em;
+    text-shadow: 0 1px 10px rgba(0,0,0,.55);
+    transition: color .15s ease;
+  }
+  .brand-links a:hover { color: var(--fg); }
 
   .stage {
     position: relative; z-index: 4; height: 100%; display: flex; flex-direction: column;
@@ -391,9 +417,13 @@
         <path d="M16 5.5 L18.4 16.2 L16 14.4 L13.6 16.2 Z" fill="#5CB88A"/>
         <circle cx="16" cy="18" r="1.7" fill="#5CB88A"/>
       </svg>
-      <b>榴芒启航</b><span>LUMINA NAV</span>
+      <span class="brand-text">
+        <span class="brand-name">榴芒启航 LUMINA NAV</span>
+        <span class="brand-sep">/</span>
+        <span class="brand-tag">一个沉浸式开始页</span>
+      </span>
     </div>
-    <div class="brand-links"><span>沉浸式开始页</span></div>
+    <div class="brand-links"><a href="https://lmai.lmboys.com" target="_blank" rel="noopener">我的作品集</a></div>
   </div>
 
   <main class="stage">
@@ -920,6 +950,7 @@ function applyBg(idx, skip) {
     nextEl.classList.add('on');
     cur.classList.remove('on');
     state.showingA = !state.showingA;
+    applyBgTone(url);
   };
   var upgradeToUhd = function () {
     if (!item.uhd || item.uhd === item.full) return;
@@ -950,6 +981,37 @@ function applyBg(idx, skip) {
     applyBg(idx + 1, skip);
   };
   low.src = item.full || item.uhd;
+}
+
+function applyBgTone(url) {
+  if (!url) { setBgTone(null); return; }
+  var probe = new Image();
+  probe.crossOrigin = 'anonymous';
+  probe.referrerPolicy = 'no-referrer';
+  probe.onload = function () {
+    var lum = null;
+    try {
+      var c = document.createElement('canvas');
+      c.width = 24; c.height = 6;
+      var ctx = c.getContext('2d');
+      var band = Math.max(1, Math.round(probe.naturalHeight * 0.18));
+      ctx.drawImage(probe, 0, 0, probe.naturalWidth, band, 0, 0, 24, 6);
+      var d = ctx.getImageData(0, 0, 24, 6).data, sum = 0, n = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        sum += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255; n++;
+      }
+      lum = sum / n;
+    } catch (e) { lum = null; }
+    setBgTone(lum);
+  };
+  probe.onerror = function () { setBgTone(null); };
+  probe.src = url;
+}
+
+function setBgTone(lum) {
+  var t = (lum === null || isNaN(lum)) ? 0.3 : Math.max(0, Math.min(1, (lum - 0.34) / 0.5));
+  document.body.style.setProperty('--hdr-lum', t.toFixed(3));
+  document.body.dataset.bgTone = t > 0.55 ? 'bright' : (t < 0.18 ? 'deep' : 'mid');
 }
 
 var BANG_MAP = { g: 1, google: 1, b: 0, bing: 0, d: 2, baidu: 2 };
